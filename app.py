@@ -21,13 +21,21 @@ def ask_data_agent(user_prompt):
     # Initialize the correct client for BigQuery Agents
     data_chat_client = geminidataanalytics.DataChatServiceClient()
     
-    # Your Google Cloud details
     project_id = "ctrl-digital-ga4"
     location = "europe-north2"
-    agent_id = "agent_ae90c1a1-04c1-4cd8-810a-736137d572c4" 
     
-    # Format the Agent Path
-    agent_path = data_chat_client.data_agent_path(project_id, location, agent_id)
+    # Paste whatever you have here (full string or just the ID)
+    raw_agent_id = "agent_ae90c1a1-04c1-4cd8-810a-736137d572c4" 
+    
+    # --- NEW: Automatically clean the ID just in case! ---
+    if "/" in raw_agent_id:
+        clean_agent_id = raw_agent_id.split("/")[-1]
+    else:
+        clean_agent_id = raw_agent_id
+    # -----------------------------------------------------
+
+    # Format the Agent Path using the cleaned ID
+    agent_path = data_chat_client.data_agent_path(project_id, location, clean_agent_id)
     
     # Package the user's prompt
     messages = [
@@ -51,13 +59,10 @@ def ask_data_agent(user_prompt):
     )
     
     try:
-        # Send the question to Google
         response = data_chat_client.chat(request=request)
         
-        # Extract the plain text answer from the agent
         final_answer = ""
         for msg in response.messages:
-            # Check if the message came from the system/agent and contains text
             if getattr(msg, "system_message", None) and getattr(msg.system_message, "text", None):
                 final_answer += str(getattr(msg.system_message.text, "text", msg.system_message.text)) + "\n"
                 
