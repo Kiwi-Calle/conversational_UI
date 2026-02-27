@@ -1,10 +1,10 @@
 import streamlit as st
+from google.cloud import discoveryengine_v1alpha as discoveryengine # ADDED: Import the Google Cloud API library
 
 # 1. Set up the page
 st.set_page_config(page_title="Conversational Agent", page_icon="📊", layout="wide")
 
 # 2. Inject Custom CSS for the Background
-# You can change the hex code (#f0f4f8) to any color you like, or even use an image URL!
 st.markdown(
     """
     <style>
@@ -16,8 +16,31 @@ st.markdown(
     unsafe_allow_html=True
 )
 
+# --- ADDED: The Function that talks to your Data Agent ---
+def ask_data_agent(user_prompt):
+    # Initialize the client
+    client = discoveryengine.ConversationalSearchServiceClient()
+    
+    # YOUR SPECIFIC AGENT RESOURCE NAME
+    # Replace YOUR_AGENT_ID with the actual ID from your console
+    agent_resource_name = "projects/ctrl-digital-ga4/locations/europe-north2/agents/agent_ae90c1a1-04c1-4cd8-810a-736137d572c4"
+    
+    # Format the request
+    request = discoveryengine.ConverseConversationRequest(
+        name=agent_resource_name,
+        query=discoveryengine.TextInput(input=user_prompt)
+    )
+    
+    try:
+        # Send the question to Google
+        response = client.converse_conversation(request=request)
+        # Extract the text answer provided by the Data Agent
+        return response.reply.summary.summary_text
+    except Exception as e:
+        return f"Oops! I couldn't reach the Data Agent. Error: {e}"
+# ---------------------------------------------------------
+
 # 3. Initialize Multiple Chats in Session State
-# Instead of one list, we use a dictionary to hold multiple lists of messages
 if "chats" not in st.session_state:
     st.session_state.chats = {"Conversation 1": []}
 if "current_chat" not in st.session_state:
@@ -62,8 +85,14 @@ if prompt := st.chat_input("Ask about your data"):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Simulated API Response
+    # --- UPDATED: Call the Real API instead of simulating it ---
     with st.chat_message("assistant"):
-        response = f"I am looking up data for '{prompt}' in {st.session_state.current_chat}..."
-        st.markdown(response)
-        st.session_state.chats[st.session_state.current_chat].append({"role": "assistant", "content": response})
+        with st.spinner("Analyzing data in BigQuery..."):
+            
+            # Send the prompt to the new function
+            response = ask_data_agent(prompt)
+            
+            # Display and save the real answer
+            st.markdown(response)
+            st.session_state.chats[st.session_state.current_chat].append({"role": "assistant", "content": response})
+    # -----------------------------------------------------------
