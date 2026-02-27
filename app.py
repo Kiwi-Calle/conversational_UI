@@ -70,4 +70,5 @@ def ask_data_agent(user_prompt):
 # 4. Initialize Multiple Chats in Session State
 if "chats" not in st.session_state:
     st.session_state.chats = {"Conversation 1": []}
-if "current_chat" not in st
+if "current_chat" not in st.session_state:
+    st.session_state.current_chat = "Conversation 1"
