@@ -19,31 +19,48 @@ st.markdown(
 )
 
 # ----------------------------
-# 2) Data Agent call (GLOBAL + streaming + retry on transient errors)
+# 2) Helpers
 # ----------------------------
+def _extract_text(obj) -> str:
+    """Best-effort extractor for different SDK text shapes."""
+    if obj is None:
+        return ""
+
+    if isinstance(obj, str):
+        return obj
+
+    # Common shapes: .text (string) OR .text.text
+    t = getattr(obj, "text", None)
+    if isinstance(t, str):
+        return t
+
+    if t is not None:
+        t2 = getattr(t, "text", None)
+        if isinstance(t2, str):
+            return t2
+
+    return ""
+
+
 @st.cache_resource
 def get_data_chat_client() -> geminidataanalytics.DataChatServiceClient:
     # Reuse the client across reruns for performance
     return geminidataanalytics.DataChatServiceClient()
 
 
-def ask_data_agent(user_prompt: str) -> str:
+def stream_data_agent(user_prompt: str):
+    """
+    Yields text chunks as they arrive from the Data Agent (server-streaming).
+    """
     data_chat_client = get_data_chat_client()
 
-    # Your Google Cloud details
     project_id = "ctrl-digital-ga4"
-    location = "global"  # ✅ Conversational Analytics / Data Agents are typically global
-
-    # Your Agent ID
+    location = "global"
     raw_agent_id = "agent_ae90c1a1-04c1-4cd8-810a-736137d572c4"
-
-    # Clean the ID if a full path/URL was pasted
     clean_agent_id = raw_agent_id.split("/")[-1]
 
-    # Build the agent resource path
     agent_path = data_chat_client.data_agent_path(project_id, location, clean_agent_id)
 
-    # Build request
     request = geminidataanalytics.ChatRequest(
         parent=f"projects/{project_id}/locations/{location}",
         messages=[
@@ -54,7 +71,6 @@ def ask_data_agent(user_prompt: str) -> str:
         data_agent_context=geminidataanalytics.DataAgentContext(data_agent=agent_path),
     )
 
-    # Retry transient errors (503 etc.)
     chat_retry = retry.Retry(
         predicate=retry.if_exception_type(
             gexc.ServiceUnavailable,
@@ -64,33 +80,24 @@ def ask_data_agent(user_prompt: str) -> str:
         initial=1.0,
         maximum=20.0,
         multiplier=2.0,
-        deadline=120.0,  # total retry window
+        deadline=120.0,
     )
 
-    try:
-        chunks: list[str] = []
+    # Stream responses
+    for resp in data_chat_client.chat(request=request, timeout=300.0, retry=chat_retry):
+        for msg in getattr(resp, "messages", []):
+            # Prefer assistant_message, fallback to system_message
+            a_msg = getattr(msg, "assistant_message", None)
+            s_msg = getattr(msg, "system_message", None)
 
-        # ✅ Consume server-streaming responses
-        for resp in data_chat_client.chat(request=request, timeout=300.0, retry=chat_retry):
-            for msg in getattr(resp, "messages", []):
-                sys_msg = getattr(msg, "system_message", None)
-                if not sys_msg:
-                    continue
+            txt = ""
+            if a_msg:
+                txt = _extract_text(getattr(a_msg, "text", a_msg))
+            if not txt and s_msg:
+                txt = _extract_text(getattr(s_msg, "text", s_msg))
 
-                # sys_msg.text shape may vary; handle both shapes safely
-                text_obj = getattr(sys_msg, "text", None)
-                if not text_obj:
-                    continue
-
-                text_val = getattr(text_obj, "text", None) if hasattr(text_obj, "text") else text_obj
-                if text_val:
-                    chunks.append(str(text_val))
-
-        final_answer = "\n".join(chunks).strip()
-        return final_answer or "The agent responded, but no text summary was returned."
-
-    except Exception as e:
-        return f"Oops! I couldn't reach the Data Agent. Error: {e}"
+            if txt:
+                yield txt
 
 
 # ----------------------------
@@ -127,13 +134,12 @@ with st.sidebar:
 st.title(f"📊 {st.session_state.current_chat}")
 
 current_messages = st.session_state.chats[st.session_state.current_chat]
-
 for message in current_messages:
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 # ----------------------------
-# 6) User input handling
+# 6) User input handling (STREAMING OUTPUT)
 # ----------------------------
 if prompt := st.chat_input("Ask about your GA4 data..."):
     # Save user message
@@ -143,12 +149,28 @@ if prompt := st.chat_input("Ask about your GA4 data..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Call the agent + display response
+    # Stream assistant response
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing data in BigQuery..."):
-            response = ask_data_agent(prompt)
+        placeholder = st.empty()
+        full_text = ""
 
-        st.markdown(response)
-        st.session_state.chats[st.session_state.current_chat].append(
-            {"role": "assistant", "content": response}
-        )
+        try:
+            with st.spinner("Analyzing data in BigQuery..."):
+                for chunk in stream_data_agent(prompt):
+                    # Append as it streams
+                    full_text += chunk
+                    placeholder.markdown(full_text)
+
+            # If nothing came back, show a helpful fallback
+            if not full_text.strip():
+                full_text = "The agent responded, but no text output was returned."
+                placeholder.markdown(full_text)
+
+        except Exception as e:
+            full_text = f"Oops! I couldn't reach the Data Agent. Error: {e}"
+            placeholder.markdown(full_text)
+
+    # Save assistant message
+    st.session_state.chats[st.session_state.current_chat].append(
+        {"role": "assistant", "content": full_text}
+    )
