@@ -1,7 +1,9 @@
+import json
 import streamlit as st
 from google.cloud import geminidataanalytics
 from google.api_core import retry
 from google.api_core import exceptions as gexc
+from google.protobuf.json_format import MessageToDict
 
 # ----------------------------
 # 1) Page setup + styling
@@ -22,14 +24,17 @@ st.markdown(
 # 2) Helpers
 # ----------------------------
 def _extract_text(obj) -> str:
-    """Best-effort extractor for different SDK text shapes."""
+    """
+    Best-effort extractor for different SDK text shapes.
+    Returns "" if it can't find a text value.
+    """
     if obj is None:
         return ""
 
     if isinstance(obj, str):
         return obj
 
-    # Common shapes: .text (string) OR .text.text
+    # Common shapes: obj.text (string) OR obj.text.text
     t = getattr(obj, "text", None)
     if isinstance(t, str):
         return t
@@ -42,25 +47,46 @@ def _extract_text(obj) -> str:
     return ""
 
 
+def _to_dict(proto_obj) -> dict:
+    """
+    Convert protobuf message to a JSON-serializable dict (best effort).
+    This lets us always show "whatever the agent returned".
+    """
+    try:
+        pb = getattr(proto_obj, "_pb", proto_obj)
+        return MessageToDict(pb, preserving_proto_field_name=True)
+    except Exception:
+        return {"repr": repr(proto_obj)}
+
+
 @st.cache_resource
 def get_data_chat_client() -> geminidataanalytics.DataChatServiceClient:
     # Reuse the client across reruns for performance
     return geminidataanalytics.DataChatServiceClient()
 
 
-def stream_data_agent(user_prompt: str):
+def stream_data_agent_with_raw(user_prompt: str):
     """
-    Yields text chunks as they arrive from the Data Agent (server-streaming).
+    Stream the Data Agent response.
+    Yields tuples: (text_chunk: str, raw_message_dict: dict)
+
+    text_chunk may be "" if the response is structured/non-text.
+    raw_message_dict is always provided (best effort).
     """
     data_chat_client = get_data_chat_client()
 
+    # Your Google Cloud details
     project_id = "ctrl-digital-ga4"
-    location = "global"
+    location = "global"  # ✅ Conversational Analytics / Data Agents are typically global
+
+    # Your Agent ID
     raw_agent_id = "agent_ae90c1a1-04c1-4cd8-810a-736137d572c4"
     clean_agent_id = raw_agent_id.split("/")[-1]
 
+    # Build the agent resource path
     agent_path = data_chat_client.data_agent_path(project_id, location, clean_agent_id)
 
+    # Build request
     request = geminidataanalytics.ChatRequest(
         parent=f"projects/{project_id}/locations/{location}",
         messages=[
@@ -71,6 +97,7 @@ def stream_data_agent(user_prompt: str):
         data_agent_context=geminidataanalytics.DataAgentContext(data_agent=agent_path),
     )
 
+    # Retry transient errors
     chat_retry = retry.Retry(
         predicate=retry.if_exception_type(
             gexc.ServiceUnavailable,
@@ -85,7 +112,10 @@ def stream_data_agent(user_prompt: str):
 
     # Stream responses
     for resp in data_chat_client.chat(request=request, timeout=300.0, retry=chat_retry):
+        # Some SDK variants return response chunks containing a list of messages
         for msg in getattr(resp, "messages", []):
+            msg_dict = _to_dict(msg)
+
             # Prefer assistant_message, fallback to system_message
             a_msg = getattr(msg, "assistant_message", None)
             s_msg = getattr(msg, "system_message", None)
@@ -96,8 +126,11 @@ def stream_data_agent(user_prompt: str):
             if not txt and s_msg:
                 txt = _extract_text(getattr(s_msg, "text", s_msg))
 
-            if txt:
-                yield txt
+            yield (txt, msg_dict)
+
+        # If resp unexpectedly has no messages, still yield raw resp dict once
+        if not getattr(resp, "messages", None):
+            yield ("", _to_dict(resp))
 
 
 # ----------------------------
@@ -108,8 +141,12 @@ if "chats" not in st.session_state:
 if "current_chat" not in st.session_state:
     st.session_state.current_chat = "Conversation 1"
 
+# Optional UI toggle to always show raw output for debugging
+if "show_raw" not in st.session_state:
+    st.session_state.show_raw = False
+
 # ----------------------------
-# 4) Sidebar (chat history)
+# 4) Sidebar (chat history + debug toggle)
 # ----------------------------
 with st.sidebar:
     st.title("💬 Chat History")
@@ -128,6 +165,9 @@ with st.sidebar:
             st.session_state.current_chat = chat_name
             st.rerun()
 
+    st.divider()
+    st.session_state.show_raw = st.toggle("Show raw agent output (debug)", value=st.session_state.show_raw)
+
 # ----------------------------
 # 5) Main chat UI
 # ----------------------------
@@ -139,7 +179,7 @@ for message in current_messages:
         st.markdown(message["content"])
 
 # ----------------------------
-# 6) User input handling (STREAMING OUTPUT)
+# 6) User input handling (STREAM text if possible, otherwise SHOW RAW)
 # ----------------------------
 if prompt := st.chat_input("Ask about your GA4 data..."):
     # Save user message
@@ -149,28 +189,68 @@ if prompt := st.chat_input("Ask about your GA4 data..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Stream assistant response
+    # Assistant response area
     with st.chat_message("assistant"):
-        placeholder = st.empty()
+        text_placeholder = st.empty()
+        raw_placeholder = st.empty()
+
         full_text = ""
+        raw_messages = []
+        saw_text = False
 
         try:
             with st.spinner("Analyzing data in BigQuery..."):
-                for chunk in stream_data_agent(prompt):
-                    # Append as it streams
-                    full_text += chunk
-                    placeholder.markdown(full_text)
+                for text_chunk, raw_msg in stream_data_agent_with_raw(prompt):
+                    raw_messages.append(raw_msg)
 
-            # If nothing came back, show a helpful fallback
-            if not full_text.strip():
-                full_text = "The agent responded, but no text output was returned."
-                placeholder.markdown(full_text)
+                    # Stream text if present
+                    if text_chunk:
+                        saw_text = True
+                        full_text += text_chunk
+                        text_placeholder.markdown(full_text)
+
+                    # Optionally live-show the latest raw message while streaming
+                    if st.session_state.show_raw:
+                        raw_placeholder.json(raw_msg)
+
+            # If we got text, finalize
+            if saw_text and full_text.strip():
+                text_placeholder.markdown(full_text)
+
+                # If debug toggle is on, show all raw messages at the end too (capped)
+                if st.session_state.show_raw:
+                    raw_placeholder.json(raw_messages[:50])
+
+                # Save assistant message (text) to history
+                st.session_state.chats[st.session_state.current_chat].append(
+                    {"role": "assistant", "content": full_text}
+                )
+
+            else:
+                # No text found — show raw output as the "answer"
+                text_placeholder.markdown(
+                    "No plain text was returned. Showing raw agent output below:"
+                )
+                raw_placeholder.json(raw_messages[:50])  # cap to keep UI responsive
+
+                # Offer download of full raw output
+                raw_json_str = json.dumps(raw_messages, indent=2, ensure_ascii=False)
+                st.download_button(
+                    "Download full raw response (JSON)",
+                    data=raw_json_str,
+                    file_name="agent_response.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+
+                # Save a placeholder entry to history
+                st.session_state.chats[st.session_state.current_chat].append(
+                    {"role": "assistant", "content": "No plain text returned; raw output shown."}
+                )
 
         except Exception as e:
-            full_text = f"Oops! I couldn't reach the Data Agent. Error: {e}"
-            placeholder.markdown(full_text)
-
-    # Save assistant message
-    st.session_state.chats[st.session_state.current_chat].append(
-        {"role": "assistant", "content": full_text}
-    )
+            err = f"Oops! I couldn't reach the Data Agent. Error: {e}"
+            text_placeholder.markdown(err)
+            st.session_state.chats[st.session_state.current_chat].append(
+                {"role": "assistant", "content": err}
+            )
