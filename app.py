@@ -30,7 +30,7 @@ def ask_data_agent(user_prompt):
     location = "europe-north2"
     
     # ⚠️ IMPORTANT: Replace this with your actual Agent ID from the console!
-    raw_agent_id = "YOUR_AGENT_ID" 
+    raw_agent_id = "agent_ae90c1a1-04c1-4cd8-810a-736137d572c4" 
     
     # Clean the ID just in case you pasted the full URL path
     if "/" in raw_agent_id:
