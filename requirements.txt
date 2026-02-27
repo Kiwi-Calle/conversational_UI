@@ -1,3 +1,4 @@
 streamlit
 google-cloud-geminidataanalytics
 google-cloud-bigquery
+google-api-core
