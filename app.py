@@ -59,7 +59,7 @@ def ask_data_agent(user_prompt):
     
     try:
         # Send the question to Google
-        response = data_chat_client.chat(request=request)
+        response = data_chat_client.chat(request=request, timeout=300.0)
         
         # Extract the plain text answer from the agent
         final_answer = ""
