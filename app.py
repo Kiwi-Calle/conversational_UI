@@ -5,11 +5,15 @@ from google.cloud import geminidataanalytics
 st.set_page_config(page_title="Conversational Agent", page_icon="📊", layout="wide")
 
 # 2. Inject Custom CSS for the Background
+# Added white text colors so your words don't hide in the dark background!
 st.markdown(
     """
     <style>
     .stApp {
         background-color: #36454F; 
+    }
+    p, h1, h2, h3, h4, h5, h6, span, div {
+        color: #FAFAFA !important;
     }
     </style>
     """,
@@ -24,7 +28,9 @@ def ask_data_agent(user_prompt):
     # Your specific Google Cloud details
     project_id = "ctrl-digital-ga4"
     location = "europe-north2"
-    raw_agent_id = "agent_ae90c1a1-04c1-4cd8-810a-736137d572c4" 
+    
+    # ⚠️ IMPORTANT: Replace this with your actual Agent ID from the console!
+    raw_agent_id = "YOUR_AGENT_ID" 
     
     # Clean the ID just in case you pasted the full URL path
     if "/" in raw_agent_id:
@@ -72,3 +78,52 @@ if "chats" not in st.session_state:
     st.session_state.chats = {"Conversation 1": []}
 if "current_chat" not in st.session_state:
     st.session_state.current_chat = "Conversation 1"
+
+# 5. Build the Sidebar
+with st.sidebar:
+    st.title("💬 Chat History")
+    
+    # Button to create a new chat
+    if st.button("➕ New Conversation", use_container_width=True):
+        new_chat_name = f"Conversation {len(st.session_state.chats) + 1}"
+        st.session_state.chats[new_chat_name] = []
+        st.session_state.current_chat = new_chat_name
+        st.rerun() # Refreshes the UI
+
+    st.divider()
+
+    # Create a button for every existing chat
+    for chat_name in st.session_state.chats.keys():
+        is_active = "✅ " if chat_name == st.session_state.current_chat else ""
+        if st.button(f"{is_active}{chat_name}", use_container_width=True):
+            st.session_state.current_chat = chat_name
+            st.rerun()
+
+# 6. Main Chat Interface
+st.title(f"📊 {st.session_state.current_chat}")
+
+# Load messages only for the currently selected chat
+current_messages = st.session_state.chats[st.session_state.current_chat]
+
+for message in current_messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# 7. Handle User Input
+if prompt := st.chat_input("Ask about your GA4 data..."):
+    
+    # Save to the specific active chat
+    st.session_state.chats[st.session_state.current_chat].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Call the Real API
+    with st.chat_message("assistant"):
+        with st.spinner("Analyzing data in BigQuery..."):
+            
+            # Send the prompt to the API function
+            response = ask_data_agent(prompt)
+            
+            # Display and save the real answer
+            st.markdown(response)
+            st.session_state.chats[st.session_state.current_chat].append({"role": "assistant", "content": response})
